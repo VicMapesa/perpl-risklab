@@ -1,5 +1,5 @@
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 type PerplMarket = {
   id: number;
@@ -17,14 +17,50 @@ type PerplContext = {
   markets: PerplMarket[];
 };
 
-export async function GET() {
-  try {
-    const response = await fetch(
-      "https://app.perpl.xyz/api/v1/pub/context",
-      {
-        cache: "no-store",
-      }
+const PERPL_CONTEXT_URL =
+  "https://app.perpl.xyz/api/v1/pub/context";
+
+const REQUEST_TIMEOUT_MS = 10000;
+
+function errorResponse(
+  message: string,
+  status: number
+) {
+  return NextResponse.json(
+    { error: message },
+    {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    }
+  );
+}
+
+export async function GET(request: NextRequest) {
+  const requestedMarket = (
+    request.nextUrl.searchParams.get("market") ??
+    "MON"
+  )
+    .trim()
+    .toUpperCase()
+    .replace(/-PERP$/, "");
+
+  if (!/^[A-Z0-9]{1,20}$/.test(requestedMarket)) {
+    return errorResponse(
+      "Invalid market symbol",
+      400
     );
+  }
+
+  try {
+    const response = await fetch(PERPL_CONTEXT_URL, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: {
+        Accept: "application/json",
+      },
+    });
 
     if (!response.ok) {
       throw new Error(
@@ -32,22 +68,41 @@ export async function GET() {
       );
     }
 
-    const data: PerplContext = await response.json();
+    const data: unknown = await response.json();
 
-    const mon = data.markets.find(
-      (market) =>
-        market.id === 10 && market.name === "MON"
-    );
-
-    if (!mon) {
-      return NextResponse.json(
-        { error: "MON market not found" },
-        { status: 404 }
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !("markets" in data) ||
+      !Array.isArray(data.markets)
+    ) {
+      return errorResponse(
+        "Invalid Perpl market response",
+        502
       );
     }
 
-    const rate = mon.funding?.rate;
-    const intervalSeconds = mon.funding_interval_sec;
+    const markets = data.markets as PerplMarket[];
+
+    const selectedMarket = markets.find(
+      (market) =>
+        market &&
+        typeof market.name === "string" &&
+        market.name.toUpperCase() ===
+          requestedMarket &&
+        Number.isInteger(market.id)
+    );
+
+    if (!selectedMarket) {
+      return errorResponse(
+        `${requestedMarket}-PERP market not found`,
+        404
+      );
+    }
+
+    const rate = selectedMarket.funding?.rate;
+    const intervalSeconds =
+      selectedMarket.funding_interval_sec;
 
     if (
       typeof rate !== "number" ||
@@ -56,17 +111,29 @@ export async function GET() {
       !Number.isFinite(intervalSeconds) ||
       intervalSeconds <= 0
     ) {
-      return NextResponse.json(
-        { error: "Valid funding data unavailable" },
-        { status: 503 }
+      return errorResponse(
+        `Valid funding data unavailable for ${requestedMarket}-PERP`,
+        503
       );
     }
 
+    const rawTimestamp =
+      selectedMarket.funding?.at?.t;
+
+    const eventTimestamp =
+      typeof rawTimestamp === "number" &&
+      Number.isFinite(rawTimestamp)
+        ? rawTimestamp
+        : null;
+
     return NextResponse.json(
       {
+        market: `${selectedMarket.name}-PERP`,
+        symbol: selectedMarket.name,
+        marketId: selectedMarket.id,
         rate,
         intervalSeconds,
-        eventTimestamp: mon.funding?.at?.t ?? null,
+        eventTimestamp,
       },
       {
         headers: {
@@ -75,11 +142,14 @@ export async function GET() {
       }
     );
   } catch (error) {
-    console.error("Perpl funding API error:", error);
+    console.error(
+      "Perpl funding API error:",
+      error
+    );
 
-    return NextResponse.json(
-      { error: "Unable to fetch Perpl funding data" },
-      { status: 502 }
+    return errorResponse(
+      "Unable to fetch Perpl funding data",
+      502
     );
   }
 }
