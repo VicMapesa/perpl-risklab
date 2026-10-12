@@ -1,26 +1,222 @@
+
 @import "tailwindcss";
 
+/* ========================================
+   PERPL RISKLAB — GLOBAL DESIGN SYSTEM
+   ======================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+
+  /* Core surfaces */
+  --background: #090b12;
+  --foreground: #f4f4f7;
+  --surface: #12151f;
+  --surface-raised: #191d29;
+  --surface-hover: #202534;
+
+  /* Borders */
+  --border: #292e3d;
+  --border-subtle: #202432;
+
+  /* Brand */
+  --accent: #8b5cf6;
+  --accent-hover: #a78bfa;
+  --accent-soft: rgba(139, 92, 246, 0.12);
+
+  /* Text */
+  --text-primary: #f4f4f7;
+  --text-secondary: #a1a7b7;
+  --text-muted: #747c8e;
+
+  /* Financial states */
+  --positive: #34d399;
+  --negative: #fb7185;
+  --warning: #fbbf24;
+
+  /* Shape */
+  --radius-card: 18px;
+  --radius-control: 12px;
+
+  /* Depth */
+  --shadow-card:
+    0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ========================================
+   BASE
+   ======================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
+  min-height: 100vh;
+  margin: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.35);
+  color: #ffffff;
+}
+
+/* ========================================
+   ACCESSIBILITY
+   ======================================== */
+
+:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ========================================
+   SHARED DESIGN UTILITIES
+   ======================================== */
+
+.risklab-surface {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+}
+
+.risklab-surface-raised {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.risklab-card {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.risklab-card-interactive {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    transform 180ms ease;
+}
+
+.risklab-card-interactive:hover {
+  background: var(--surface-hover);
+  border-color: rgba(139, 92, 246, 0.35);
+  transform: translateY(-2px);
+}
+
+.risklab-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.risklab-muted {
+  color: var(--text-secondary);
+}
+
+.risklab-number {
+  font-family:
+    var(--font-geist-mono),
+    ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+}
+
+.risklab-divider {
+  height: 1px;
+  border: 0;
+  background: var(--border-subtle);
+}
+
+.risklab-accent {
+  color: var(--accent-hover);
+}
+
+.risklab-positive {
+  color: var(--positive);
+}
+
+.risklab-negative {
+  color: var(--negative);
+}
+
+.risklab-warning {
+  color: var(--warning);
+}
+
+/* ========================================
+   RESPONSIVE & INTERACTION
+   ======================================== */
+
+@media (max-width: 640px) {
+  .risklab-card,
+  .risklab-surface,
+  .risklab-surface-raised {
+    border-radius: 14px;
+  }
+}
+
+@media (hover: none) {
+  .risklab-card-interactive:hover {
+    transform: none;
+  }
 }

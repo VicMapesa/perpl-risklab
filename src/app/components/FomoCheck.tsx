@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 
 type FomoData = {
   market: string;
+  symbol?: string;
+  decimals?: number;
   source: string;
   currentPrice: number;
   hourAgoPrice: number;
@@ -20,20 +22,91 @@ type FomoData = {
 type FomoCheckProps = {
   collateral: number;
   leverage: number;
+  market?: string;
 };
 
-function price(value: number) {
-  return `$${value.toFixed(6)}`;
+function normalizeMarket(value: string) {
+  const normalized = value.trim().toUpperCase();
+
+  return normalized.endsWith("-PERP")
+    ? normalized
+    : `${normalized}-PERP`;
+}
+
+function formatPrice(value: number, decimals: number) {
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}`;
+}
+
+function formatMoney(value: number) {
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function signedPercent(value: number) {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function isValidFomoData(
+  value: unknown,
+  expectedMarket: string
+): value is FomoData {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const result = value as Partial<FomoData>;
+
+  return (
+    result.market === expectedMarket &&
+    typeof result.source === "string" &&
+    typeof result.currentPrice === "number" &&
+    Number.isFinite(result.currentPrice) &&
+    result.currentPrice > 0 &&
+    typeof result.hourAgoPrice === "number" &&
+    Number.isFinite(result.hourAgoPrice) &&
+    result.hourAgoPrice > 0 &&
+    typeof result.dayStartPrice === "number" &&
+    Number.isFinite(result.dayStartPrice) &&
+    result.dayStartPrice > 0 &&
+    typeof result.dayHigh === "number" &&
+    Number.isFinite(result.dayHigh) &&
+    result.dayHigh > 0 &&
+    typeof result.dayLow === "number" &&
+    Number.isFinite(result.dayLow) &&
+    result.dayLow > 0 &&
+    typeof result.oneHourChangePercent === "number" &&
+    Number.isFinite(result.oneHourChangePercent) &&
+    typeof result.dayChangePercent === "number" &&
+    Number.isFinite(result.dayChangePercent) &&
+    typeof result.candleCount === "number" &&
+    Number.isInteger(result.candleCount) &&
+    result.candleCount > 0 &&
+    typeof result.observedAt === "number" &&
+    Number.isFinite(result.observedAt) &&
+    (
+      result.decimals === undefined ||
+      (
+        Number.isInteger(result.decimals) &&
+        result.decimals >= 0 &&
+        result.decimals <= 12
+      )
+    )
+  );
+}
+
 export default function FomoCheck({
   collateral,
   leverage,
+  market = "MON-PERP",
 }: FomoCheckProps) {
+  const selectedMarket = normalizeMarket(market);
+  const assetSymbol = selectedMarket.replace(/-PERP$/, "");
+
   const [data, setData] = useState<FomoData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -42,39 +115,45 @@ export default function FomoCheck({
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
 
     async function loadData() {
       try {
-        const response = await fetch("/api/fomo", {
-          cache: "no-store",
-        });
+        const response = await fetch(
+          `/api/fomo?market=${encodeURIComponent(assetSymbol)}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
 
         if (!response.ok) {
-          throw new Error("FOMO data unavailable");
+          throw new Error(
+            `Historical data unavailable (${response.status})`
+          );
         }
 
-        const result = (await response.json()) as FomoData;
+        const result: unknown = await response.json();
 
-        if (
-          !Number.isFinite(result.currentPrice) ||
-          result.currentPrice <= 0 ||
-          !Number.isFinite(result.hourAgoPrice) ||
-          result.hourAgoPrice <= 0 ||
-          !Number.isFinite(result.dayHigh) ||
-          !Number.isFinite(result.dayLow) ||
-          !Number.isFinite(result.oneHourChangePercent) ||
-          !Number.isFinite(result.dayChangePercent)
-        ) {
-          throw new Error("Invalid historical data");
+        if (!isValidFomoData(result, selectedMarket)) {
+          throw new Error("Invalid or mismatched market data");
         }
 
         if (active) {
           setData(result);
           setError("");
         }
-      } catch {
-        if (active) {
-          setError("Unable to load historical MON prices.");
+      } catch (caughtError) {
+        if (
+          active &&
+          !(
+            caughtError instanceof Error &&
+            caughtError.name === "AbortError"
+          )
+        ) {
+          setError(
+            `Unable to load historical prices for ${selectedMarket}.`
+          );
         }
       } finally {
         if (active) {
@@ -89,14 +168,21 @@ export default function FomoCheck({
 
     return () => {
       active = false;
+      controller.abort();
       window.clearInterval(timer);
     };
-  }, []);
+  }, [assetSymbol, selectedMarket]);
+
+  // Never show historical data belonging to another market.
+  const visibleData =
+    data?.market === selectedMarket ? data : null;
+
+  const priceDecimals = visibleData?.decimals ?? 6;
 
   const exposure = collateral * leverage;
 
-  const scenarioPrice = data
-    ? data.currentPrice * (1 - pullbackPercent / 100)
+  const scenarioPrice = visibleData
+    ? visibleData.currentPrice * (1 - pullbackPercent / 100)
     : 0;
 
   const scenarioPnL =
@@ -110,7 +196,8 @@ export default function FomoCheck({
       : 0;
 
   const recentRally =
-    data !== null && data.oneHourChangePercent > 0;
+    visibleData !== null &&
+    visibleData.oneHourChangePercent > 0;
 
   return (
     <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
@@ -119,31 +206,40 @@ export default function FomoCheck({
           Risk Lab
         </p>
 
-        <h2 className="mt-2 text-2xl font-semibold">
-          FOMO Check
-        </h2>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-2xl font-semibold">
+            FOMO Check
+          </h2>
+
+          <span className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-300">
+            {selectedMarket}
+          </span>
+        </div>
 
         <p className="mt-2 text-sm text-zinc-400">
-          Explore the risk of entering a leveraged LONG
-          after a price increase. This is an educational
+          Explore the risk of entering a leveraged {assetSymbol}
+          LONG after a price increase. This is an educational
           scenario, not a trading signal.
         </p>
       </div>
 
-      {loading && !data && (
+      {loading && !visibleData && !error && (
         <p className="text-sm text-zinc-400">
-          Loading Perpl price history...
+          Loading {selectedMarket} historical prices...
         </p>
       )}
 
       {error && (
-        <p className="mb-4 text-sm text-amber-400">
+        <p
+          role="alert"
+          className="mb-4 text-sm text-rose-400"
+        >
           {error}
-          {data && " Showing the last successful reading."}
+          {visibleData && " Showing the last successful reading."}
         </p>
       )}
 
-      {data && (
+      {visibleData && (
         <>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-5">
@@ -153,14 +249,16 @@ export default function FomoCheck({
 
               <p
                 className={`mt-2 text-3xl font-bold ${
-                  data.oneHourChangePercent > 0
+                  visibleData.oneHourChangePercent > 0
                     ? "text-green-400"
-                    : data.oneHourChangePercent < 0
+                    : visibleData.oneHourChangePercent < 0
                       ? "text-red-400"
                       : "text-white"
                 }`}
               >
-                {signedPercent(data.oneHourChangePercent)}
+                {signedPercent(
+                  visibleData.oneHourChangePercent
+                )}
               </p>
 
               <p className="mt-2 text-xs text-zinc-500">
@@ -176,14 +274,16 @@ export default function FomoCheck({
 
               <p
                 className={`mt-2 text-3xl font-bold ${
-                  data.dayChangePercent < 0
+                  visibleData.dayChangePercent < 0
                     ? "text-red-400"
-                    : data.dayChangePercent > 0
+                    : visibleData.dayChangePercent > 0
                       ? "text-green-400"
                       : "text-white"
                 }`}
               >
-                {signedPercent(data.dayChangePercent)}
+                {signedPercent(
+                  visibleData.dayChangePercent
+                )}
               </p>
             </div>
 
@@ -192,8 +292,11 @@ export default function FomoCheck({
                 Latest Candle Close
               </p>
 
-              <p className="mt-2 font-mono text-2xl font-bold">
-                {price(data.currentPrice)}
+              <p className="mt-2 break-words font-mono text-2xl font-bold">
+                {formatPrice(
+                  visibleData.currentPrice,
+                  priceDecimals
+                )}
               </p>
             </div>
 
@@ -202,8 +305,11 @@ export default function FomoCheck({
                 Price One Hour Earlier
               </p>
 
-              <p className="mt-2 font-mono text-2xl font-bold">
-                {price(data.hourAgoPrice)}
+              <p className="mt-2 break-words font-mono text-2xl font-bold">
+                {formatPrice(
+                  visibleData.hourAgoPrice,
+                  priceDecimals
+                )}
               </p>
             </div>
           </div>
@@ -215,13 +321,21 @@ export default function FomoCheck({
 
             <p className="mt-2 text-sm text-zinc-300">
               {recentRally
-                ? "MON increased over the observed one-hour period. A recent price increase does not guarantee that the increase will continue."
-                : "MON did not increase over the observed one-hour period. The downside scenario below remains useful for understanding leveraged exposure."}
+                ? `${assetSymbol} increased over the observed one-hour period. A recent price increase does not guarantee that the increase will continue.`
+                : `${assetSymbol} did not increase over the observed one-hour period. The downside scenario below remains useful for understanding leveraged exposure.`}
             </p>
 
             <p className="mt-2 text-sm text-zinc-400">
               Observed 24-hour range:{" "}
-              {price(data.dayLow)} to {price(data.dayHigh)}
+              {formatPrice(
+                visibleData.dayLow,
+                priceDecimals
+              )}{" "}
+              to{" "}
+              {formatPrice(
+                visibleData.dayHigh,
+                priceDecimals
+              )}
             </p>
           </div>
 
@@ -231,13 +345,13 @@ export default function FomoCheck({
             </p>
 
             <h3 className="mt-2 text-xl font-semibold">
-              What if MON falls after a new LONG entry?
+              What if {assetSymbol} falls after a new LONG entry?
             </h3>
 
             <p className="mt-2 text-sm text-zinc-400">
               Assume a new virtual LONG is opened at
               the latest candle close using{" "}
-              ${collateral.toFixed(2)} collateral and{" "}
+              {formatMoney(collateral)} collateral and{" "}
               {leverage}× leverage. This does not modify
               your existing paper position.
             </p>
@@ -280,22 +394,30 @@ export default function FomoCheck({
             <div className="mt-5 grid gap-3 md:grid-cols-2">
               <ScenarioValue
                 label="Hypothetical Entry Price"
-                value={price(data.currentPrice)}
+                value={formatPrice(
+                  visibleData.currentPrice,
+                  priceDecimals
+                )}
               />
 
               <ScenarioValue
                 label="Hypothetical Price After Decline"
-                value={price(scenarioPrice)}
+                value={formatPrice(
+                  scenarioPrice,
+                  priceDecimals
+                )}
               />
 
               <ScenarioValue
                 label="Virtual Exposure"
-                value={`$${exposure.toFixed(2)}`}
+                value={formatMoney(exposure)}
               />
 
               <ScenarioValue
                 label="Hypothetical P&L"
-                value={`-$${Math.abs(scenarioPnL).toFixed(2)}`}
+                value={`-${formatMoney(
+                  Math.abs(scenarioPnL)
+                )}`}
                 negative
               />
 
@@ -307,7 +429,7 @@ export default function FomoCheck({
 
               <ScenarioValue
                 label="Hypothetical Equity"
-                value={`$${scenarioEquity.toFixed(2)}`}
+                value={formatMoney(scenarioEquity)}
                 negative={scenarioEquity <= 0}
               />
             </div>
@@ -327,23 +449,23 @@ export default function FomoCheck({
 
           <div className="mt-5 rounded-xl border border-zinc-700 bg-zinc-950 p-4">
             <p className="text-sm text-zinc-300">
-              Based on {data.candleCount} historical
+              Based on {visibleData.candleCount} historical
               Perpl candles. Latest observed candle:{" "}
-              {new Date(data.observedAt).toLocaleString()}.
+              {new Date(
+                visibleData.observedAt
+              ).toLocaleString()}.
               FOMO is a human behavior and cannot be
               determined from price changes alone.
             </p>
           </div>
 
-          <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-            <p className="text-sm text-amber-300">
-              Educational simulation only. This is not
-              a FOMO diagnosis, price prediction, buy/sell
-              signal, or real trade. Scenario P&L excludes
-              trading fees, funding, slippage, maintenance
-              margin, and actual liquidation mechanics.
-            </p>
-          </div>
+          <p className="mt-4 text-xs leading-6 text-zinc-500">
+            Educational simulation only. This is not a
+            FOMO diagnosis, price prediction, buy/sell
+            signal, or real trade. Scenario P&amp;L excludes
+            trading fees, funding, slippage, maintenance
+            margin, and actual liquidation mechanics.
+          </p>
         </>
       )}
     </section>
@@ -366,7 +488,7 @@ function ScenarioValue({
       </p>
 
       <p
-        className={`mt-2 text-xl font-bold ${
+        className={`mt-2 break-words text-xl font-bold ${
           negative ? "text-red-400" : "text-white"
         }`}
       >

@@ -5,6 +5,9 @@ import { useEffect, useState } from "react";
 
 type VolatilityData = {
   market: string;
+  symbol: string;
+  marketId: number;
+  decimals: number;
   source: string;
   candleIntervalSeconds: number;
   candleCount: number;
@@ -20,213 +23,411 @@ type VolatilityData = {
   observedTo: number;
 };
 
+type VolatilityAnalysisProps = {
+  market?: string;
+};
+
+const REFRESH_INTERVAL = 60000;
+
+function normalizeMarket(value: string) {
+  const symbol = value.trim().toUpperCase();
+
+  return symbol.endsWith("-PERP")
+    ? symbol
+    : `${symbol}-PERP`;
+}
+
+function isVolatilityData(
+  value: unknown
+): value is VolatilityData {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const data = value as Partial<VolatilityData>;
+
+  const numericFields = [
+    data.marketId,
+    data.decimals,
+    data.candleIntervalSeconds,
+    data.candleCount,
+    data.firstOpen,
+    data.lastClose,
+    data.high,
+    data.low,
+    data.changePercent,
+    data.rangePercent,
+    data.fiveMinuteVolatilityPercent,
+    data.scaled24hVolatilityPercent,
+    data.observedFrom,
+    data.observedTo,
+  ];
+
+  return (
+    typeof data.market === "string" &&
+    typeof data.symbol === "string" &&
+    typeof data.source === "string" &&
+    numericFields.every(
+      (number) =>
+        typeof number === "number" &&
+        Number.isFinite(number)
+    ) &&
+    typeof data.decimals === "number" &&
+    Number.isInteger(data.decimals) &&
+    data.decimals >= 0 &&
+    data.decimals <= 12 &&
+    typeof data.candleCount === "number" &&
+    data.candleCount >= 3 &&
+    typeof data.candleIntervalSeconds === "number" &&
+    data.candleIntervalSeconds > 0
+  );
+}
+
 function formatPercent(value: number) {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-export default function VolatilityAnalysis() {
-  const [data, setData] = useState<VolatilityData | null>(null);
+function formatPrice(
+  value: number,
+  decimals: number
+) {
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}`;
+}
+
+function Metric({
+  label,
+  value,
+  description,
+  highlighted = false,
+  valueColor = "text-white",
+}: {
+  label: string;
+  value: string;
+  description?: string;
+  highlighted?: boolean;
+  valueColor?: string;
+}) {
+  return (
+    <div
+      className={`rounded-xl border p-5 ${
+        highlighted
+          ? "border-violet-500/30 bg-violet-500/5"
+          : "border-[#292e3d] bg-[#191d29]"
+      }`}
+    >
+      <p className="text-sm text-[#a1a7b7]">
+        {label}
+      </p>
+
+      <p
+        className={`risklab-number mt-3 break-words text-2xl font-semibold ${valueColor}`}
+      >
+        {value}
+      </p>
+
+      {description && (
+        <p className="mt-2 text-xs leading-5 text-[#858b9d]">
+          {description}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function VolatilityAnalysis({
+  market = "MON-PERP",
+}: VolatilityAnalysisProps) {
+  const selectedMarket = normalizeMarket(market);
+
+  const [data, setData] =
+    useState<VolatilityData | null>(null);
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const [lastUpdated, setLastUpdated] =
+    useState<Date | null>(null);
 
   useEffect(() => {
     let active = true;
 
+    let controller: AbortController | null = null;
+
     async function loadVolatility() {
+      controller?.abort();
+
+      const currentController =
+        new AbortController();
+
+      controller = currentController;
+
       try {
-        const response = await fetch("/api/volatility", {
-          cache: "no-store",
-        });
+        const symbol = selectedMarket.replace(
+          /-PERP$/,
+          ""
+        );
+
+        const response = await fetch(
+          `/api/volatility?market=${encodeURIComponent(
+            symbol
+          )}`,
+          {
+            cache: "no-store",
+            signal: currentController.signal,
+          }
+        );
 
         if (!response.ok) {
-          throw new Error("Historical data unavailable");
+          let message =
+            "Unable to load historical data.";
+
+          try {
+            const body: unknown =
+              await response.json();
+
+            if (
+              body &&
+              typeof body === "object" &&
+              "error" in body &&
+              typeof body.error === "string"
+            ) {
+              message = body.error;
+            }
+          } catch {
+            // Keep the default message.
+          }
+
+          throw new Error(message);
         }
 
-        const result = (await response.json()) as VolatilityData;
+        const result: unknown =
+          await response.json();
+
+        if (!isVolatilityData(result)) {
+          throw new Error(
+            "Invalid volatility data received."
+          );
+        }
 
         if (
-          !Number.isFinite(result.high) ||
-          !Number.isFinite(result.low) ||
-          !Number.isFinite(result.changePercent) ||
-          !Number.isFinite(result.rangePercent) ||
-          !Number.isFinite(result.fiveMinuteVolatilityPercent) ||
-          !Number.isFinite(result.scaled24hVolatilityPercent)
+          normalizeMarket(result.market) !==
+          selectedMarket
         ) {
-          throw new Error("Invalid volatility data");
+          throw new Error(
+            "Historical data does not match the selected market."
+          );
         }
 
-        if (active) {
-          setData(result);
-          setError("");
+        if (
+          !active ||
+          currentController.signal.aborted
+        ) {
+          return;
         }
-      } catch {
-        if (active) {
-          setError("Unable to load Perpl historical data.");
+
+        setData(result);
+        setError("");
+        setLastUpdated(new Date());
+      } catch (err) {
+        if (
+          !active ||
+          currentController.signal.aborted
+        ) {
+          return;
         }
+
+        setData(null);
+
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to load Perpl historical data."
+        );
       } finally {
-        if (active) {
+        if (
+          active &&
+          !currentController.signal.aborted
+        ) {
           setLoading(false);
         }
       }
     }
 
-    loadVolatility();
+    setData(null);
+    setError("");
+    setLoading(true);
+    setLastUpdated(null);
 
-    const timer = window.setInterval(loadVolatility, 60000);
+    void loadVolatility();
+
+    const timer = window.setInterval(
+      () => void loadVolatility(),
+      REFRESH_INTERVAL
+    );
 
     return () => {
       active = false;
       window.clearInterval(timer);
+      controller?.abort();
     };
-  }, []);
+  }, [selectedMarket]);
+
+  const currentData =
+    data &&
+    normalizeMarket(data.market) === selectedMarket
+      ? data
+      : null;
 
   return (
-    <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-      <div className="mb-6">
-        <p className="text-sm font-semibold uppercase tracking-widest text-violet-400">
-          Risk Lab
-        </p>
+    <section className="mt-6 rounded-2xl border border-[#292e3d] bg-[#151820] p-6 sm:p-7">
+      <p className="text-xs font-semibold uppercase tracking-[0.17em] text-violet-400">
+        RISK LAB
+      </p>
 
-        <h2 className="mt-2 text-2xl font-semibold">
-          Volatility Analysis
-        </h2>
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold">
+            Volatility Analysis
+          </h2>
 
-        <p className="mt-2 text-sm text-zinc-400">
-          Explore how much MON has moved over the
-          last 24 hours using historical Perpl market data.
-        </p>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-[#a1a7b7]">
+            Explore how much {selectedMarket} has
+            moved over the last 24 hours using
+            historical Perpl market data.
+          </p>
+        </div>
+
+        <span className="rounded-lg border border-[#34394a] bg-[#191d29] px-3 py-2 text-xs font-medium text-[#c2c6d2]">
+          {selectedMarket}
+        </span>
       </div>
 
-      {loading && !data && (
-        <p className="text-sm text-zinc-400">
-          Loading Perpl historical prices...
+      {loading && !currentData && (
+        <p
+          role="status"
+          className="mt-6 text-sm text-[#a1a7b7]"
+        >
+          Loading {selectedMarket} historical prices...
         </p>
       )}
 
       {error && (
-        <p className="mb-4 text-sm text-amber-400">
-          {error}
-          {data && " Showing the last successful reading."}
-        </p>
+        <div
+          role="alert"
+          className="mt-6 rounded-xl border border-[#34394a] bg-[#191d29] p-5"
+        >
+          <p className="text-sm text-[#c2c6d2]">
+            {error}
+          </p>
+
+          <p className="mt-2 text-xs text-[#858b9d]">
+            Historical metrics are unavailable
+            until valid data is received.
+          </p>
+        </div>
       )}
 
-      {data && (
+      {currentData && (
         <>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-5">
-              <p className="text-sm text-zinc-400">
-                Observed Price Change
-              </p>
+          <div className="mt-7 grid gap-4 md:grid-cols-2">
+            <Metric
+              label="Observed Price Change"
+              value={formatPercent(
+                currentData.changePercent
+              )}
+              description="First candle open to last candle close"
+              highlighted
+              valueColor={
+                currentData.changePercent > 0
+                  ? "text-emerald-400"
+                  : currentData.changePercent < 0
+                    ? "text-rose-400"
+                    : "text-white"
+              }
+            />
 
-              <p
-                className={`mt-2 text-3xl font-bold ${
-                  data.changePercent < 0
-                    ? "text-red-400"
-                    : data.changePercent > 0
-                      ? "text-green-400"
-                      : "text-white"
-                }`}
-              >
-                {formatPercent(data.changePercent)}
-              </p>
+            <Metric
+              label="Observed High–Low Range"
+              value={`${currentData.rangePercent.toFixed(
+                2
+              )}%`}
+              description="Range divided by the first opening price"
+            />
 
-              <p className="mt-2 text-xs text-zinc-500">
-                First candle open to last candle close
-              </p>
-            </div>
+            <Metric
+              label="Highest Observed Price"
+              value={formatPrice(
+                currentData.high,
+                currentData.decimals
+              )}
+            />
 
-            <div className="rounded-xl bg-zinc-950 p-5">
-              <p className="text-sm text-zinc-400">
-                Observed High–Low Range
-              </p>
+            <Metric
+              label="Lowest Observed Price"
+              value={formatPrice(
+                currentData.low,
+                currentData.decimals
+              )}
+            />
 
-              <p className="mt-2 text-3xl font-bold">
-                {data.rangePercent.toFixed(2)}%
-              </p>
+            <Metric
+              label="Five-Minute Return Volatility"
+              value={`${currentData.fiveMinuteVolatilityPercent.toFixed(
+                2
+              )}%`}
+              description="Sample standard deviation of five-minute log returns"
+            />
 
-              <p className="mt-2 text-xs text-zinc-500">
-                Range divided by the first opening price
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-zinc-950 p-5">
-              <p className="text-sm text-zinc-400">
-                Highest Observed Price
-              </p>
-
-              <p className="mt-2 font-mono text-2xl font-bold">
-                ${data.high.toFixed(6)}
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-zinc-950 p-5">
-              <p className="text-sm text-zinc-400">
-                Lowest Observed Price
-              </p>
-
-              <p className="mt-2 font-mono text-2xl font-bold">
-                ${data.low.toFixed(6)}
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-zinc-950 p-5">
-              <p className="text-sm text-zinc-400">
-                Five-Minute Return Volatility
-              </p>
-
-              <p className="mt-2 text-2xl font-bold">
-                {data.fiveMinuteVolatilityPercent.toFixed(2)}%
-              </p>
-
-              <p className="mt-2 text-xs text-zinc-500">
-                Sample standard deviation of five-minute
-                log returns
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-zinc-950 p-5">
-              <p className="text-sm text-zinc-400">
-                24-Hour-Scaled Volatility
-              </p>
-
-              <p className="mt-2 text-2xl font-bold">
-                {data.scaled24hVolatilityPercent.toFixed(2)}%
-              </p>
-
-              <p className="mt-2 text-xs text-zinc-500">
-                Five-minute volatility multiplied by
-                the square root of 288
-              </p>
-            </div>
+            <Metric
+              label="24-Hour-Scaled Volatility"
+              value={`${currentData.scaled24hVolatilityPercent.toFixed(
+                2
+              )}%`}
+              description="Five-minute volatility multiplied by the square root of 288"
+            />
           </div>
 
-          <div className="mt-5 rounded-xl border border-zinc-700 bg-zinc-950 p-4">
-            <p className="text-sm text-zinc-300">
-              Based on {data.candleCount} Perpl candles
-              with a {data.candleIntervalSeconds / 60}-minute
-              interval. These measurements describe
-              historical price movement, not the risk
-              of a particular future trade.
+          <div className="mt-5 rounded-xl border border-[#292e3d] bg-[#191d29] p-5">
+            <p className="text-sm leading-7 text-[#c2c6d2]">
+              Based on {currentData.candleCount}{" "}
+              Perpl candles with a{" "}
+              {currentData.candleIntervalSeconds / 60}
+              -minute interval.
             </p>
 
-            <p className="mt-2 text-xs text-zinc-500">
+            <p className="mt-2 text-xs leading-6 text-[#858b9d]">
               Observed period:{" "}
-              {new Date(data.observedFrom).toLocaleString()}
+              {new Date(
+                currentData.observedFrom
+              ).toLocaleString()}
               {" — "}
-              {new Date(data.observedTo).toLocaleString()}
+              {new Date(
+                currentData.observedTo
+              ).toLocaleString()}
             </p>
           </div>
 
-          <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-            <p className="text-sm text-amber-300">
+          <div className="mt-4 rounded-xl border border-[#292e3d] bg-[#191d29] p-4">
+            <p className="text-xs leading-6 text-[#858b9d]">
               Educational historical analysis only.
-              The 24-hour-scaled volatility is a statistical
-              transformation of observed returns, not a
-              prediction or guaranteed price range.
-              Volatility can change suddenly, and leveraged
-              positions can experience amplified losses.
+              The 24-hour-scaled volatility is a
+              statistical transformation of
+              observed returns, not a prediction
+              or guaranteed price range.
+              Volatility can change suddenly,
+              and leverage amplifies exposure.
             </p>
           </div>
+
+          {lastUpdated && (
+            <p className="mt-4 text-xs text-[#747c8e]">
+              Last received:{" "}
+              {lastUpdated.toLocaleTimeString()}
+            </p>
+          )}
         </>
       )}
     </section>

@@ -12,6 +12,8 @@ type RiskSimulatorProps = {
   leverage: number;
   quantity: number;
   direction: Direction;
+  market?: string;
+  decimals?: number;
 };
 
 export default function RiskSimulator({
@@ -21,8 +23,20 @@ export default function RiskSimulator({
   leverage,
   quantity,
   direction,
+  market = "MON-PERP",
+  decimals = 6,
 }: RiskSimulatorProps) {
   const [priceChange, setPriceChange] = useState(0);
+
+  const selectedMarket = market.trim().toUpperCase().endsWith("-PERP")
+    ? market.trim().toUpperCase()
+    : `${market.trim().toUpperCase()}-PERP`;
+
+  const assetSymbol = selectedMarket.replace(/-PERP$/, "");
+
+  const priceDecimals = Number.isFinite(decimals)
+    ? Math.min(12, Math.max(0, Math.trunc(decimals)))
+    : 6;
 
   const simulatedPrice = currentPrice * (1 + priceChange / 100);
 
@@ -45,7 +59,18 @@ export default function RiskSimulator({
 
   function formatMoney(value: number) {
     const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-    return `${sign}$${Math.abs(value).toFixed(2)}`;
+
+    return `${sign}$${Math.abs(value).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
+  function formatPrice(value: number) {
+    return `$${value.toLocaleString("en-US", {
+      minimumFractionDigits: priceDecimals,
+      maximumFractionDigits: priceDecimals,
+    })}`;
   }
 
   return (
@@ -55,13 +80,19 @@ export default function RiskSimulator({
           Risk Lab
         </p>
 
-        <h2 className="mt-2 text-2xl font-semibold">
-          Price Stress Simulator
-        </h2>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-2xl font-semibold">
+            Price Stress Simulator
+          </h2>
+
+          <span className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-300">
+            {selectedMarket}
+          </span>
+        </div>
 
         <p className="mt-2 text-sm text-zinc-400">
-          Explore how a hypothetical MON price movement could affect
-          your virtual position.
+          Explore how a hypothetical {assetSymbol} price movement
+          could affect your virtual position.
         </p>
       </div>
 
@@ -114,25 +145,37 @@ export default function RiskSimulator({
 
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         <ResultCard
-          label="Simulated MON Price"
-          value={`$${simulatedPrice.toFixed(6)}`}
+          label={`Simulated ${assetSymbol} Price`}
+          value={formatPrice(simulatedPrice)}
         />
 
         <ResultCard
           label="Hypothetical P&L"
           value={formatMoney(simulatedPnL)}
-          color={isNegative ? "red" : simulatedPnL > 0 ? "green" : "default"}
+          color={
+            isNegative
+              ? "red"
+              : simulatedPnL > 0
+                ? "green"
+                : "default"
+          }
         />
 
         <ResultCard
           label="Return on Collateral"
           value={`${returnOnCollateral > 0 ? "+" : ""}${returnOnCollateral.toFixed(2)}%`}
-          color={isNegative ? "red" : simulatedPnL > 0 ? "green" : "default"}
+          color={
+            isNegative
+              ? "red"
+              : simulatedPnL > 0
+                ? "green"
+                : "default"
+          }
         />
 
         <ResultCard
           label="Hypothetical Equity"
-          value={`$${simulatedEquity.toFixed(2)}`}
+          value={formatMoney(simulatedEquity)}
           color={simulatedEquity <= 0 ? "red" : "default"}
         />
       </div>
@@ -169,18 +212,18 @@ export default function RiskSimulator({
         </div>
       )}
 
-      <div className="mt-6 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-        <p className="text-sm text-amber-300">
+      <div className="mt-6 rounded-xl border border-zinc-700 bg-zinc-950 p-4">
+        <p className="text-xs leading-6 text-zinc-400">
           Educational simulation only. Price changes are hypothetical,
           not forecasts. Results exclude fees, funding, slippage,
           maintenance margin, and actual Perpl liquidation rules.
         </p>
       </div>
 
-      <p className="mt-4 text-xs text-zinc-500">
-        Position: {direction} · {leverage}× leverage ·
-        Entry ${entryPrice.toFixed(6)} ·
-        Current ${currentPrice.toFixed(6)}
+      <p className="mt-4 text-xs leading-6 text-zinc-500">
+        Market: {selectedMarket} · Position: {direction} ·{" "}
+        {leverage}× leverage · Entry {formatPrice(entryPrice)} ·{" "}
+        Current {formatPrice(currentPrice)}
       </p>
     </section>
   );
@@ -204,8 +247,11 @@ function ResultCard({
 
   return (
     <div className="rounded-xl bg-zinc-950 p-5">
-      <p className="text-sm text-zinc-400">{label}</p>
-      <p className={`mt-2 text-2xl font-bold ${textColor}`}>
+      <p className="text-sm text-zinc-400">
+        {label}
+      </p>
+
+      <p className={`mt-2 break-words text-2xl font-bold ${textColor}`}>
         {value}
       </p>
     </div>

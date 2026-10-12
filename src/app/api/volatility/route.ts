@@ -1,5 +1,5 @@
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 type PerplCandle = {
   t: number;
@@ -17,21 +17,151 @@ type PerplCandleResponse = {
   d: PerplCandle[];
 };
 
-const PRICE_DECIMALS = 6;
+type MarketOption = {
+  id: number;
+  symbol: string;
+  label: string;
+  decimals: number;
+};
+
 const CANDLE_SECONDS = 300;
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
-export async function GET() {
+const DEFAULT_MARKET = "MON";
+
+const PERPL_API =
+  "https://app.perpl.xyz/api/v1";
+
+function isMarketOption(
+  value: unknown
+): value is MarketOption {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const market = value as Partial<MarketOption>;
+
+  return (
+    typeof market.id === "number" &&
+    Number.isInteger(market.id) &&
+    typeof market.symbol === "string" &&
+    /^[A-Z0-9]+$/.test(market.symbol) &&
+    market.label === `${market.symbol}-PERP` &&
+    typeof market.decimals === "number" &&
+    Number.isInteger(market.decimals) &&
+    market.decimals >= 0 &&
+    market.decimals <= 12
+  );
+}
+
+function isCandle(
+  value: unknown
+): value is PerplCandle {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candle = value as Partial<PerplCandle>;
+
+  return (
+    typeof candle.t === "number" &&
+    Number.isFinite(candle.t) &&
+    typeof candle.o === "number" &&
+    Number.isFinite(candle.o) &&
+    candle.o > 0 &&
+    typeof candle.h === "number" &&
+    Number.isFinite(candle.h) &&
+    candle.h > 0 &&
+    typeof candle.l === "number" &&
+    Number.isFinite(candle.l) &&
+    candle.l > 0 &&
+    typeof candle.c === "number" &&
+    Number.isFinite(candle.c) &&
+    candle.c > 0
+  );
+}
+
+async function discoverMarkets(
+  request: NextRequest
+): Promise<MarketOption[]> {
+  const url = new URL(
+    "/api/market?list=1",
+    request.url
+  );
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Market discovery returned ${response.status}`
+    );
+  }
+
+  const data: unknown = await response.json();
+
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("markets" in data) ||
+    !Array.isArray(data.markets)
+  ) {
+    throw new Error("Invalid market discovery response");
+  }
+
+  return data.markets.filter(isMarketOption);
+}
+
+export async function GET(request: NextRequest) {
   try {
+    const requestedMarket =
+      request.nextUrl.searchParams
+        .get("market")
+        ?.trim()
+        .toUpperCase() || DEFAULT_MARKET;
+
+    const symbol = requestedMarket.replace(
+      /-PERP$/,
+      ""
+    );
+
+    if (!/^[A-Z0-9]+$/.test(symbol)) {
+      return NextResponse.json(
+        { error: "Invalid market symbol" },
+        { status: 400 }
+      );
+    }
+
+    // Discover the correct market ID and
+    // decimal precision from the market API.
+    const markets = await discoverMarkets(request);
+
+    const selectedMarket = markets.find(
+      (market) => market.symbol === symbol
+    );
+
+    if (!selectedMarket) {
+      return NextResponse.json(
+        {
+          error: `Market ${symbol} is not available`,
+        },
+        { status: 404 }
+      );
+    }
+
     const end = Date.now();
     const start = end - LOOKBACK_MS;
 
     const url =
-      `https://app.perpl.xyz/api/v1/market-data/10/candles/` +
+      `${PERPL_API}/market-data/` +
+      `${selectedMarket.id}/candles/` +
       `${CANDLE_SECONDS}/${start}-${end}`;
 
     const response = await fetch(url, {
       cache: "no-store",
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
@@ -40,48 +170,55 @@ export async function GET() {
       );
     }
 
-    const data: PerplCandleResponse =
-      await response.json();
+    const data: unknown = await response.json();
 
-    if (!Array.isArray(data.d)) {
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !("d" in data) ||
+      !Array.isArray(data.d)
+    ) {
       throw new Error("Invalid candle response");
     }
 
-    const candles = data.d
+    const candleResponse =
+      data as PerplCandleResponse;
+
+    const candles = candleResponse.d
       .filter(
         (candle) =>
-          Number.isFinite(candle.t) &&
-          Number.isFinite(candle.o) &&
-          Number.isFinite(candle.h) &&
-          Number.isFinite(candle.l) &&
-          Number.isFinite(candle.c) &&
-          candle.o > 0 &&
-          candle.h > 0 &&
-          candle.l > 0 &&
-          candle.c > 0 &&
+          isCandle(candle) &&
           candle.t >= start &&
           candle.t <= end
       )
       .sort((a, b) => a.t - b.t);
 
-    if (candles.length < 2) {
+    if (candles.length < 3) {
       return NextResponse.json(
-        { error: "Insufficient historical data" },
+        {
+          error:
+            `Insufficient historical data for ${selectedMarket.label}`,
+        },
         { status: 503 }
       );
     }
 
-    const divisor = 10 ** PRICE_DECIMALS;
+    const divisor =
+      10 ** selectedMarket.decimals;
 
-    const firstOpen = candles[0].o / divisor;
+    const firstOpen =
+      candles[0].o / divisor;
+
     const lastClose =
       candles[candles.length - 1].c / divisor;
 
     const high =
-      Math.max(...candles.map((c) => c.h)) / divisor;
+      Math.max(...candles.map((c) => c.h)) /
+      divisor;
 
     const low =
-      Math.min(...candles.map((c) => c.l)) / divisor;
+      Math.min(...candles.map((c) => c.l)) /
+      divisor;
 
     const changePercent =
       ((lastClose - firstOpen) / firstOpen) * 100;
@@ -92,8 +229,11 @@ export async function GET() {
     const returns: number[] = [];
 
     for (let i = 1; i < candles.length; i++) {
-      const previousClose = candles[i - 1].c;
-      const currentClose = candles[i].c;
+      const previousClose =
+        candles[i - 1].c;
+
+      const currentClose =
+        candles[i].c;
 
       returns.push(
         Math.log(currentClose / previousClose)
@@ -101,29 +241,35 @@ export async function GET() {
     }
 
     const mean =
-      returns.reduce((sum, value) => sum + value, 0) /
-      returns.length;
+      returns.reduce(
+        (sum, value) => sum + value,
+        0
+      ) / returns.length;
 
     const variance =
       returns.reduce(
-        (sum, value) => sum + (value - mean) ** 2,
+        (sum, value) =>
+          sum + (value - mean) ** 2,
         0
       ) / (returns.length - 1);
 
     const fiveMinuteVolatilityPercent =
       Math.sqrt(variance) * 100;
 
-    // Descriptive scaling of observed five-minute
-    // volatility to a 24-hour horizon.
-    // This is not a forecast.
+    // Statistical scaling, not a forecast.
     const scaled24hVolatilityPercent =
-      fiveMinuteVolatilityPercent * Math.sqrt(288);
+      fiveMinuteVolatilityPercent *
+      Math.sqrt(288);
 
     return NextResponse.json(
       {
-        market: "MON-PERP",
+        market: selectedMarket.label,
+        symbol: selectedMarket.symbol,
+        marketId: selectedMarket.id,
+        decimals: selectedMarket.decimals,
         source: "Perpl",
-        candleIntervalSeconds: CANDLE_SECONDS,
+        candleIntervalSeconds:
+          CANDLE_SECONDS,
         candleCount: candles.length,
         firstOpen,
         lastClose,
@@ -134,7 +280,8 @@ export async function GET() {
         fiveMinuteVolatilityPercent,
         scaled24hVolatilityPercent,
         observedFrom: candles[0].t,
-        observedTo: candles[candles.length - 1].t,
+        observedTo:
+          candles[candles.length - 1].t,
       },
       {
         headers: {
@@ -143,10 +290,16 @@ export async function GET() {
       }
     );
   } catch (error) {
-    console.error("Volatility API error:", error);
+    console.error(
+      "Volatility API error:",
+      error
+    );
 
     return NextResponse.json(
-      { error: "Unable to fetch volatility data" },
+      {
+        error:
+          "Unable to fetch volatility data",
+      },
       { status: 502 }
     );
   }
