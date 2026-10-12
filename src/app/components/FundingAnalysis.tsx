@@ -3,6 +3,8 @@
 
 import { useEffect, useState } from "react";
 
+type Direction = "LONG" | "SHORT";
+
 type FundingData = {
   market: string;
   symbol: string;
@@ -15,11 +17,12 @@ type FundingData = {
 type FundingAnalysisProps = {
   currentPrice: number;
   quantity: number;
-  direction: "LONG" | "SHORT";
+  direction: Direction;
   market?: string;
 };
 
-const REFRESH_INTERVAL = 30000;
+const REFRESH_INTERVAL_MS = 30_000;
+const FUNDING_RATE_SCALE = 1_000_000;
 
 function normalizeMarket(value: string) {
   const symbol = value.trim().toUpperCase();
@@ -43,6 +46,7 @@ function isFundingData(
     typeof data.symbol === "string" &&
     typeof data.marketId === "number" &&
     Number.isInteger(data.marketId) &&
+    data.marketId >= 0 &&
     typeof data.rate === "number" &&
     Number.isFinite(data.rate) &&
     typeof data.intervalSeconds === "number" &&
@@ -64,13 +68,37 @@ function formatMoney(
   })}`;
 }
 
+function formatRate(rateFraction: number) {
+  const percentage = rateFraction * 100;
+
+  return `${percentage > 0 ? "+" : ""}${percentage.toFixed(6)}%`;
+}
+
+function formatInterval(seconds: number) {
+  if (seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+
+  return `${seconds} seconds`;
+}
+
 function Metric({
   label,
   value,
+  description,
   highlighted = false,
 }: {
   label: string;
   value: string;
+  description: string;
   highlighted?: boolean;
 }) {
   return (
@@ -87,6 +115,10 @@ function Metric({
 
       <p className="risklab-number mt-3 break-words text-2xl font-semibold text-white">
         {value}
+      </p>
+
+      <p className="mt-3 text-xs leading-5 text-[#858b9d]">
+        {description}
       </p>
     </div>
   );
@@ -171,7 +203,9 @@ export default function FundingAnalysis({
 
         if (
           normalizeMarket(data.market) !==
-          selectedMarket
+            selectedMarket ||
+          data.symbol.trim().toUpperCase() !==
+            symbol
         ) {
           throw new Error(
             "Funding response does not match the selected market."
@@ -222,7 +256,7 @@ export default function FundingAnalysis({
 
     const interval = window.setInterval(
       () => void loadFunding(),
-      REFRESH_INTERVAL
+      REFRESH_INTERVAL_MS
     );
 
     return () => {
@@ -239,17 +273,37 @@ export default function FundingAnalysis({
       ? funding
       : null;
 
-  // Perpl funding rate uses 1e6 scaling.
+  const validPosition =
+    Number.isFinite(currentPrice) &&
+    currentPrice > 0 &&
+    Number.isFinite(quantity) &&
+    quantity > 0 &&
+    (direction === "LONG" || direction === "SHORT");
+
+  const positionValue = validPosition
+    ? currentPrice * quantity
+    : null;
+
+  const validPositionValue =
+    positionValue !== null &&
+    Number.isFinite(positionValue) &&
+    positionValue > 0;
+
   const rateFraction = currentFunding
-    ? currentFunding.rate / 1_000_000
-    : 0;
+    ? currentFunding.rate / FUNDING_RATE_SCALE
+    : null;
 
-  const positionValue =
-    currentPrice * quantity;
+  const paymentMagnitude =
+    validPositionValue && rateFraction !== null
+      ? Math.abs(positionValue * rateFraction)
+      : null;
 
-  const paymentMagnitude = Math.abs(
-    positionValue * rateFraction
-  );
+  const validPayment =
+    paymentMagnitude !== null &&
+    Number.isFinite(paymentMagnitude);
+
+  const zeroFunding =
+    currentFunding?.rate === 0;
 
   return (
     <section className="mt-6 rounded-2xl border border-[#292e3d] bg-[#151820] p-6 sm:p-7">
@@ -264,8 +318,8 @@ export default function FundingAnalysis({
           </h2>
 
           <p className="mt-2 max-w-2xl text-sm leading-7 text-[#a1a7b7]">
-            Explore how a reported funding rate
-            could affect your virtual position
+            Explore how Perpl&apos;s reported funding
+            rate could affect your virtual position
             over one funding interval.
           </p>
         </div>
@@ -305,57 +359,128 @@ export default function FundingAnalysis({
           <div className="mt-7 grid gap-4 md:grid-cols-2">
             <Metric
               label="Reported Funding Rate"
-              value={`${(rateFraction * 100).toFixed(
-                6
-              )}%`}
+              value={formatRate(
+                currentFunding.rate /
+                  FUNDING_RATE_SCALE
+              )}
+              description="Perpl's reported rate converted from millionths into a percentage. A negative rate is shown with a minus sign."
             />
 
             <Metric
               label="Funding Interval"
-              value={`${(
-                currentFunding.intervalSeconds / 60
-              ).toFixed(1)} min`}
+              value={formatInterval(
+                currentFunding.intervalSeconds
+              )}
+              description="The interval associated with the reported funding rate. This is not a countdown to the next payment."
             />
 
             <Metric
               label="Virtual Position Value"
-              value={formatMoney(positionValue)}
+              value={
+                validPositionValue
+                  ? formatMoney(positionValue)
+                  : "Unavailable"
+              }
+              description="Current market price multiplied by your virtual position quantity."
             />
 
             <Metric
-              label="Hypothetical Funding Amount"
-              value={formatMoney(
-                paymentMagnitude,
-                4
-              )}
+              label="Hypothetical Funding Magnitude"
+              value={
+                validPayment
+                  ? formatMoney(
+                      paymentMagnitude,
+                      4
+                    )
+                  : "Unavailable"
+              }
               highlighted
+              description="The absolute size of one hypothetical funding amount. It does not indicate whether your position pays or receives it."
             />
           </div>
 
+          {!validPositionValue && (
+            <div
+              role="alert"
+              className="mt-5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"
+            >
+              <p className="text-sm leading-6 text-amber-300">
+                The virtual position price or
+                quantity is invalid. Funding
+                amounts cannot be calculated.
+              </p>
+            </div>
+          )}
+
+          {zeroFunding && validPositionValue && (
+            <div className="mt-5 rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+              <p className="text-sm leading-6 text-violet-200">
+                Perpl currently reports a zero
+                funding rate for this market.
+                Under this simplified calculation,
+                the hypothetical funding amount
+                for one interval is $0.
+              </p>
+            </div>
+          )}
+
           <div className="mt-5 rounded-xl border border-[#292e3d] bg-[#191d29] p-5">
-            <p className="text-sm leading-7 text-[#c2c6d2]">
+            <p className="text-sm font-semibold text-white">
+              What does funding mean?
+            </p>
+
+            <p className="mt-3 text-sm leading-7 text-[#c2c6d2]">
+              Perpetual futures use funding
+              payments to help keep contract
+              prices aligned with their
+              underlying markets.
+            </p>
+
+            <p className="mt-3 text-sm leading-7 text-[#c2c6d2]">
               Your virtual position is{" "}
               <span className="font-semibold text-white">
                 {direction}
               </span>
-              . The estimated amount represents
-              one funding interval using the
-              latest reported rate and current
-              position value.
+              . The hypothetical amount above
+              uses the reported rate and your
+              current virtual position value
+              for one funding interval.
+            </p>
+
+            <p className="mt-3 text-sm leading-7 text-[#c2c6d2]">
+              The calculation shows the
+              <span className="font-semibold text-white">
+                {" "}size of a possible funding payment
+              </span>
+              , not its direction. We have
+              not verified Perpl&apos;s exact
+              pay-versus-receive convention,
+              so this simulator does not
+              label the amount as a cost
+              or income.
+            </p>
+          </div>
+
+          <div className="mt-5 rounded-xl border border-[#292e3d] bg-[#191d29] p-5">
+            <p className="text-sm font-semibold text-white">
+              How is the amount calculated?
+            </p>
+
+            <p className="mt-3 text-sm leading-6 text-[#a1a7b7]">
+              Position value × absolute funding rate
+              = hypothetical funding magnitude.
             </p>
 
             <p className="mt-3 text-xs leading-6 text-[#858b9d]">
-              The amount is shown as an absolute
-              magnitude. Whether a position pays
-              or receives funding depends on
-              the applicable market rules and
-              funding direction.
+              This is a one-interval estimate.
+              Funding rates and position values
+              can change before settlement.
             </p>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-xs text-[#858b9d]">
             <span>
-              Updates approximately every 30 seconds
+              Refreshes approximately every 30 seconds
             </span>
 
             {lastUpdated && (
@@ -367,9 +492,12 @@ export default function FundingAnalysis({
           </div>
 
           <p className="mt-4 text-xs leading-6 text-[#747c8e]">
-            Educational simulation only. Funding
-            rates can change. No real funding
-            payments occur, and settlement
+            Educational simulation only. The
+            displayed funding amount is not an
+            actual payment or guaranteed
+            settlement value. Funding rates can
+            change. No real funding payments
+            occur, and full exchange settlement
             mechanics are not modeled.
           </p>
         </>

@@ -728,6 +728,7 @@ export default function VirtualTrade({
             {position &&
               riskTool === "liquidation" && (
                 <LiquidationRisk
+                  market={selectedMarket}
                   entryPrice={position.entryPrice}
                   currentPrice={markPrice}
                   collateral={position.collateral}

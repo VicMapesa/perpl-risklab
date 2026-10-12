@@ -25,6 +25,7 @@ type MarketOption = {
 };
 
 const CANDLE_SECONDS = 300;
+const CANDLE_INTERVAL_MS = CANDLE_SECONDS * 1000;
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_MARKET = "MON";
@@ -108,7 +109,9 @@ async function discoverMarkets(
     !("markets" in data) ||
     !Array.isArray(data.markets)
   ) {
-    throw new Error("Invalid market discovery response");
+    throw new Error(
+      "Invalid market discovery response"
+    );
   }
 
   return data.markets.filter(isMarketOption);
@@ -134,8 +137,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Discover the correct market ID and
-    // decimal precision from the market API.
     const markets = await discoverMarkets(request);
 
     const selectedMarket = markets.find(
@@ -229,14 +230,34 @@ export async function GET(request: NextRequest) {
     const returns: number[] = [];
 
     for (let i = 1; i < candles.length; i++) {
-      const previousClose =
-        candles[i - 1].c;
+      const previousCandle = candles[i - 1];
+      const currentCandle = candles[i];
 
-      const currentClose =
-        candles[i].c;
+      const timeDifference =
+        currentCandle.t - previousCandle.t;
+
+      // Only consecutive five-minute candles
+      // can produce a five-minute return.
+      if (timeDifference !== CANDLE_INTERVAL_MS) {
+        continue;
+      }
 
       returns.push(
-        Math.log(currentClose / previousClose)
+        Math.log(
+          currentCandle.c / previousCandle.c
+        )
+      );
+    }
+
+    // Sample standard deviation requires
+    // at least two valid return observations.
+    if (returns.length < 2) {
+      return NextResponse.json(
+        {
+          error:
+            `Insufficient consecutive five-minute candles for ${selectedMarket.label}`,
+        },
+        { status: 503 }
       );
     }
 
@@ -297,8 +318,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(
       {
-        error:
-          "Unable to fetch volatility data",
+        error: "Unable to fetch volatility data",
       },
       { status: 502 }
     );

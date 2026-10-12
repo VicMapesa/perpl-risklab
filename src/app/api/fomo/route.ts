@@ -17,12 +17,15 @@ type MarketOption = {
 };
 
 const INTERVAL_SECONDS = 300;
+const INTERVAL_MS = INTERVAL_SECONDS * 1000;
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MARKET = "MON";
 
 const PERPL_API = "https://app.perpl.xyz/api/v1";
 
-function isMarketOption(value: unknown): value is MarketOption {
+function isMarketOption(
+  value: unknown
+): value is MarketOption {
   if (!value || typeof value !== "object") {
     return false;
   }
@@ -65,15 +68,26 @@ function isCandle(value: unknown): value is Candle {
     typeof candle.c === "number" &&
     Number.isFinite(candle.c) &&
     candle.c > 0 &&
-    candle.h >= Math.max(candle.o, candle.c, candle.l) &&
-    candle.l <= Math.min(candle.o, candle.c, candle.h)
+    candle.h >= Math.max(
+      candle.o,
+      candle.c,
+      candle.l
+    ) &&
+    candle.l <= Math.min(
+      candle.o,
+      candle.c,
+      candle.h
+    )
   );
 }
 
 async function discoverMarkets(
   request: NextRequest
 ): Promise<MarketOption[]> {
-  const url = new URL("/api/market?list=1", request.url);
+  const url = new URL(
+    "/api/market?list=1",
+    request.url
+  );
 
   const response = await fetch(url, {
     cache: "no-store",
@@ -94,7 +108,9 @@ async function discoverMarkets(
     !("markets" in data) ||
     !Array.isArray(data.markets)
   ) {
-    throw new Error("Invalid market discovery response");
+    throw new Error(
+      "Invalid market discovery response"
+    );
   }
 
   return data.markets.filter(isMarketOption);
@@ -108,7 +124,10 @@ export async function GET(request: NextRequest) {
         ?.trim()
         .toUpperCase() || DEFAULT_MARKET;
 
-    const symbol = requestedMarket.replace(/-PERP$/, "");
+    const symbol = requestedMarket.replace(
+      /-PERP$/,
+      ""
+    );
 
     if (!/^[A-Z0-9]+$/.test(symbol)) {
       return NextResponse.json(
@@ -184,14 +203,36 @@ export async function GET(request: NextRequest) {
     const latest = candles[candles.length - 1];
     const first = candles[0];
 
+    // The historical window must cover
+    // approximately 24 hours.
+    const observedDuration =
+      latest.t - first.t;
+
+    if (
+      observedDuration <
+      LOOKBACK_MS - 2 * INTERVAL_MS
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            `Incomplete 24-hour history for ${selectedMarket.label}`,
+        },
+        { status: 503 }
+      );
+    }
+
     // Candle timestamps are milliseconds.
-    // Find the candle closest to one hour before
-    // the latest candle, without using future data.
-    const hourTarget = latest.t - 60 * 60 * 1000;
+    // Find the latest candle at or before
+    // one hour prior to the latest candle.
+    const hourTarget =
+      latest.t - 60 * 60 * 1000;
 
     const oneHourEarlier = [...candles]
       .reverse()
-      .find((candle) => candle.t <= hourTarget);
+      .find(
+        (candle) =>
+          candle.t <= hourTarget
+      );
 
     if (!oneHourEarlier) {
       return NextResponse.json(
@@ -203,10 +244,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Reject large gaps in the one-hour comparison.
     if (
       hourTarget - oneHourEarlier.t >
-      INTERVAL_SECONDS * 1000
+      INTERVAL_MS
     ) {
       return NextResponse.json(
         {
@@ -217,11 +257,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const priceScale = 10 ** selectedMarket.decimals;
+    const priceScale =
+      10 ** selectedMarket.decimals;
 
-    const currentPrice = latest.c / priceScale;
-    const hourAgoPrice = oneHourEarlier.c / priceScale;
-    const dayStartPrice = first.o / priceScale;
+    const currentPrice =
+      latest.c / priceScale;
+
+    const hourAgoPrice =
+      oneHourEarlier.c / priceScale;
+
+    const dayStartPrice =
+      first.o / priceScale;
 
     const oneHourChangePercent =
       ((currentPrice - hourAgoPrice) /
@@ -234,12 +280,14 @@ export async function GET(request: NextRequest) {
       100;
 
     const dayHigh =
-      Math.max(...candles.map((candle) => candle.h)) /
-      priceScale;
+      Math.max(
+        ...candles.map((candle) => candle.h)
+      ) / priceScale;
 
     const dayLow =
-      Math.min(...candles.map((candle) => candle.l)) /
-      priceScale;
+      Math.min(
+        ...candles.map((candle) => candle.l)
+      ) / priceScale;
 
     return NextResponse.json(
       {
@@ -265,11 +313,15 @@ export async function GET(request: NextRequest) {
       }
     );
   } catch (error) {
-    console.error("FOMO Check API error:", error);
+    console.error(
+      "FOMO Check API error:",
+      error
+    );
 
     return NextResponse.json(
       {
-        error: "Unable to fetch FOMO Check data",
+        error:
+          "Unable to fetch FOMO Check data",
       },
       { status: 502 }
     );

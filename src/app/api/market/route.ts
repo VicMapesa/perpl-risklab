@@ -13,6 +13,7 @@ type PerplMarket = {
   name: string;
   config: {
     price_decimals: number;
+    maintenance_margin?: number;
   };
   state: {
     mrk: number;
@@ -56,9 +57,7 @@ function isValidMarket(
     typeof candidate.name === "string" &&
     candidate.name.length > 0 &&
     candidate.config !== undefined &&
-    Number.isInteger(
-      candidate.config.price_decimals
-    ) &&
+    Number.isInteger(candidate.config.price_decimals) &&
     candidate.config.price_decimals >= 0 &&
     candidate.config.price_decimals <= 12 &&
     candidate.state !== undefined &&
@@ -114,7 +113,6 @@ export async function GET(request: NextRequest) {
       "Cache-Control": "no-store",
     };
 
-    // Return the available markets for the selector.
     if (
       request.nextUrl.searchParams.get("list") === "1"
     ) {
@@ -124,8 +122,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Accept either a market symbol or a market ID.
-    // Existing callers still default to MON.
     const requestedSymbol =
       request.nextUrl.searchParams.get("market");
 
@@ -193,6 +189,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const rawMaintenanceMargin =
+      selectedMarket.config.maintenance_margin;
+
+    const maintenanceMarginRaw =
+      typeof rawMaintenanceMargin === "number" &&
+      Number.isFinite(rawMaintenanceMargin) &&
+      rawMaintenanceMargin >= 0
+        ? rawMaintenanceMargin
+        : null;
+
     return NextResponse.json(
       {
         ...prices,
@@ -201,6 +207,7 @@ export async function GET(request: NextRequest) {
         market: `${normalizeSymbol(
           selectedMarket.name
         )}-PERP`,
+        maintenanceMarginRaw,
       },
       { headers }
     );
